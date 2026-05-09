@@ -26,7 +26,23 @@
   <div id="region-hint">Click and drag to select a region &nbsp;·&nbsp; Esc to cancel</div>
 </div>
 
-<!-- Rubber-band marquee overlay (DOM div, always on top of canvas) -->
+<!-- Snip confirm overlay (appears over selected snip region) -->
+<div id="snip-overlay" class="hidden">
+  <div id="snip-actions">
+    <button id="snip-copy" class="snip-btn">Copy</button>
+    <button id="snip-cancel" class="snip-btn snip-btn-cancel">✕</button>
+  </div>
+</div>
+
+<!-- Context menu -->
+<div id="context-menu" class="hidden">
+  <button data-order="front">Bring to Front</button>
+  <button data-order="forward">Bring Forward</button>
+  <button data-order="backward">Send Backward</button>
+  <button data-order="back">Send to Back</button>
+</div>
+
+<!-- Rubber-band marquee overlay -->
 <div id="marquee-rect"></div>
 
 <!-- Text input overlay -->
@@ -93,6 +109,14 @@
         <line x1="6.5" y1="13.5" x2="14" y2="13.5"/>
       </svg>
     </button>
+    <!-- Snip -->
+    <button class="tool-btn" data-tool="snip" title="Snip region (S)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" stroke-dasharray="3 1.5"/>
+        <line x1="8" y1="6" x2="8" y2="10"/>
+        <line x1="6" y1="8" x2="10" y2="8"/>
+      </svg>
+    </button>
   </div>
 
   <div class="toolbar-sep"></div>
@@ -100,7 +124,7 @@
   <!-- Style controls -->
   <div class="toolbar-group">
     <label class="color-wrap" title="Stroke color">
-      <input type="color" id="color-picker" value="#e06c75">
+      <input type="color" id="color-picker" value="#ff0000">
     </label>
     <div class="size-wrap">
       <input type="range" id="size-slider" min="1" max="40" value="4" title="Stroke size">
@@ -110,6 +134,21 @@
     <button class="tool-btn" id="fill-toggle" title="Toggle fill (shapes)">
       <svg id="fill-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
         <rect x="3" y="4" width="10" height="8" rx="1.5"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <!-- Background controls -->
+  <div class="toolbar-group">
+    <label class="color-wrap" title="Canvas background color">
+      <input type="color" id="bg-color-picker" value="#1a1917">
+    </label>
+    <button class="tool-btn" id="btn-bg-transparent" title="Toggle transparent background">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="2" y="2" width="12" height="12" rx="1.5"/>
+        <line x1="2" y1="14" x2="14" y2="2" stroke="var(--red)" stroke-width="1.2"/>
       </svg>
     </button>
   </div>

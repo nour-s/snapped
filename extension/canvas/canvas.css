@@ -9,7 +9,6 @@
   --accent:  #d4a373;
   --red:     #e06c75;
   --green:   #98c379;
-  --page:    #252320;
   --toolbar-h: 48px;
 }
 
@@ -134,8 +133,6 @@ html, body {
   position: fixed;
   top: var(--toolbar-h); left: 0;
   cursor: default;
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
 }
 
 /* ── Text input overlay ──────────────────────────────────── */
@@ -193,6 +190,70 @@ html, body {
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* ── Snip overlay ────────────────────────────────────────── */
+#snip-overlay {
+  position: fixed;
+  pointer-events: none;
+  z-index: 300;
+}
+#snip-overlay.hidden { display: none; }
+
+#snip-actions {
+  position: absolute;
+  bottom: -38px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  pointer-events: all;
+  white-space: nowrap;
+}
+
+.snip-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #1a1917;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.1s;
+}
+.snip-btn:hover { filter: brightness(1.1); }
+.snip-btn-cancel {
+  background: var(--overlay);
+  color: var(--subtext);
+}
+.snip-btn-cancel:hover { color: var(--text); }
+
+/* ── Context menu ────────────────────────────────────────── */
+#context-menu {
+  position: fixed;
+  z-index: 600;
+  background: var(--surface);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+#context-menu.hidden { display: none; }
+#context-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 7px;
+  transition: background 0.1s;
+}
+#context-menu button:hover { background: var(--overlay); }
 
 /* ── Copy toast ──────────────────────────────────────────── */
 #copy-toast {

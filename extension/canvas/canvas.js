@@ -1,14 +1,13 @@
-// SnipBoard — canvas.js v2
+// SnipBoard — canvas.js v3
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const TOOLBAR_H = 48;
-const HANDLE_R  = 5;   // handle circle radius in screen px
-const HANDLE_HIT = 10; // hit radius for handles
-const PAGE_COLOR = '#252320';
-const PAGE_BORDER = 'rgba(255,255,255,0.06)';
-const ACCENT = '#d4a373';
+const TOOLBAR_H  = 48;
+const HANDLE_R   = 5;
+const HANDLE_HIT = 10;
+const ACCENT     = '#d4a373';
+const ROT_HANDLE_DIST = 22; // px above bounding box for rotate handle (screen)
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -17,40 +16,52 @@ const state = {
   undoStack: [],
 
   // Selection
-  selected: null,        // primary selected object index (shows resize handles)
-  selectedSet: new Set(),// all selected indices
+  selected: null,
+  selectedSet: new Set(),
 
-  // Marquee (rubber-band selection)
-  marqueeStart: null,    // {wx,wy}
-  marqueeRect:  null,    // {x,y,w,h} world coords
+  // Marquee
+  marqueeStart: null,
+  marqueeRect: null,
 
   // Text editing
   editingTextIndex: null,
 
   // Tool & style
   tool:   'select',
-  color:  '#e06c75',
+  color:  '#ff0000',
   size:   4,
   filled: false,
 
+  // Background
+  bgColor: '#1a1917',       // '' = transparent
+  bgTransparent: false,
+
   // Viewport
   vx: 0, vy: 0, zoom: 1,
-  pageW: 1920, pageH: 1080,
 
-  // Drag state
-  dragging: false,
-  panning:  false,
-  panStart: null,
-  drawStart: null,
-  currentStroke: null,
-  currentShape:  null,
-  resizeHandle:  null,  // 'nw'|'n'|'ne'|'e'|'se'|'s'|'sw'|'w'|'move'
+  // Drag
+  dragging:       false,
+  panning:        false,
+  panStart:       null,
+  drawStart:      null,
+  currentStroke:  null,
+  currentShape:   null,
+  resizeHandle:   null,
   resizeDragStart: null,
   resizeObjStart:  null,
-  resizeAspect:    null, // locked aspect ratio for shift-resize
-  spaceWhileResizing: false,
+  resizeAspect:    null,
+  spaceAnchor:     null,
 
-  // Modifier keys
+  // Rotation drag
+  rotating:        false,
+  rotateStart:     null,   // {angle, wx, wy}
+  rotateObjStart:  null,   // snapshot(s) for rotation
+
+  // Snip tool state
+  snipStart: null,
+  snipRect:  null,
+
+  // Modifiers
   altDown:   false,
   shiftDown: false,
   spaceDown: false,
@@ -74,8 +85,12 @@ const fileInput     = document.getElementById('file-input');
 const fillToggle    = document.getElementById('fill-toggle');
 const marqueeDiv    = document.getElementById('marquee-rect');
 const copyToast     = document.getElementById('copy-toast');
+const snipOverlay   = document.getElementById('snip-overlay');
+const ctxMenu       = document.getElementById('context-menu');
+const bgColorPicker = document.getElementById('bg-color-picker');
+const bgTransBtn    = document.getElementById('btn-bg-transparent');
 
-// ── Canvas resize ─────────────────────────────────────────────────────────────
+// ── Canvas resize ──────────────────────────────────────────────────────────
 
 function resizeCanvas() {
   mainCanvas.width  = window.innerWidth;
@@ -86,7 +101,7 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-// ── Coordinate transforms ─────────────────────────────────────────────────────
+// ── Coordinate transforms ─────────────────────────────────────────────────
 
 function screenToWorld(sx, sy) {
   const r = mainCanvas.getBoundingClientRect();
@@ -96,50 +111,57 @@ function screenToWorld(sx, sy) {
 const wx2sx = (wx) => (wx - state.vx) * state.zoom;
 const wy2sy = (wy) => (wy - state.vy) * state.zoom;
 
-// ── Render ────────────────────────────────────────────────────────────────────
+// ── Render ────────────────────────────────────────────────────────────────
 
 function render() {
   ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+
+  // Background
+  if (!state.bgTransparent) {
+    ctx.fillStyle = state.bgColor || '#1a1917';
+    ctx.fillRect(0, 0, mainCanvas.width, mainCanvas.height);
+  }
   drawGrid();
 
   ctx.save();
   ctx.scale(state.zoom, state.zoom);
   ctx.translate(-state.vx, -state.vy);
 
-  // Canvas page (reference frame)
-  ctx.shadowColor  = 'rgba(0,0,0,0.6)';
-  ctx.shadowBlur   = 30 / state.zoom;
-  ctx.shadowOffsetY = 4 / state.zoom;
-  ctx.fillStyle = PAGE_COLOR;
-  ctx.fillRect(0, 0, state.pageW, state.pageH);
-  ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-  ctx.strokeStyle = PAGE_BORDER;
-  ctx.lineWidth = 1 / state.zoom;
-  ctx.strokeRect(0, 0, state.pageW, state.pageH);
-
-  // All objects
   for (let i = 0; i < state.objects.length; i++) {
     drawObject(ctx, state.objects[i]);
   }
 
-  // Live strokes / shapes
   if (state.currentStroke) drawLiveStroke();
   if (state.currentShape)  drawObject(ctx, state.currentShape);
 
   ctx.restore();
 
-  // Selection decorations (screen space)
   drawSelectionDecorations();
 
-  // Marquee rect
   if (state.marqueeRect) drawMarqueeRect();
+
+  if (state.snipRect) drawSnipRect();
 }
 
 function drawGrid() {
-  const step = 40 * state.zoom;
+  const step = 20 * state.zoom; // finer grid than before
   const ox = ((-state.vx * state.zoom) % step + step) % step;
   const oy = ((-state.vy * state.zoom) % step + step) % step;
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
+
+  if (state.bgTransparent) {
+    // Checkerboard for transparent bg
+    const cs = 10;
+    for (let x = 0; x < mainCanvas.width; x += cs) {
+      for (let y = 0; y < mainCanvas.height; y += cs) {
+        ctx.fillStyle = ((Math.floor(x/cs) + Math.floor(y/cs)) % 2 === 0)
+          ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.03)';
+        ctx.fillRect(x, y, cs, cs);
+      }
+    }
+    return;
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.045)';
   for (let x = ox; x < mainCanvas.width; x += step)
     for (let y = oy; y < mainCanvas.height; y += step)
       ctx.fillRect(x - 0.5, y - 0.5, 1.5, 1.5);
@@ -171,6 +193,14 @@ function applyStrokeStyle(c, obj) {
 
 function drawObject(c, obj) {
   c.save();
+  const rot = obj.rotation || 0;
+  if (rot) {
+    const b  = getBoundsNoRotation(obj);
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    c.translate(cx, cy);
+    c.rotate(rot);
+    c.translate(-cx, -cy);
+  }
   switch (obj.type) {
     case 'image': {
       if (obj.imgEl && obj.imgEl.complete && obj.imgEl.naturalWidth > 0)
@@ -261,9 +291,34 @@ function drawArrowHead(c, obj) {
   c.restore();
 }
 
-// ── Bounds / handles ──────────────────────────────────────────────────────────
+// ── Snip overlay ──────────────────────────────────────────────────────────
 
-function getBounds(obj) {
+function drawSnipRect() {
+  const r = state.snipRect;
+  if (!r) return;
+  const sx = wx2sx(r.x), sy = wy2sy(r.y);
+  const sw = r.w * state.zoom, sh = r.h * state.zoom;
+  const x = Math.min(sx, sx + sw), y = Math.min(sy, sy + sh);
+  const w = Math.abs(sw), h = Math.abs(sh);
+
+  // Dim outside
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, mainCanvas.width, y);
+  ctx.fillRect(0, y + h, mainCanvas.width, mainCanvas.height - y - h);
+  ctx.fillRect(0, y, x, h);
+  ctx.fillRect(x + w, y, mainCanvas.width - x - w, h);
+  // Bright border
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
+
+// ── Bounds / handles ──────────────────────────────────────────────────────
+
+function getBoundsNoRotation(obj) {
   switch (obj.type) {
     case 'image':   return { x: obj.x, y: obj.y, w: obj.w, h: obj.h };
     case 'rect':    return { x: Math.min(obj.x,obj.x+obj.w), y: Math.min(obj.y,obj.y+obj.h), w: Math.abs(obj.w), h: Math.abs(obj.h) };
@@ -291,6 +346,18 @@ function getBounds(obj) {
   }
 }
 
+function getBounds(obj) {
+  const b   = getBoundsNoRotation(obj);
+  const rot = obj.rotation || 0;
+  if (!rot) return b;
+  // Return AABB of the rotated rect
+  const cx = b.x + b.w/2, cy = b.y + b.h/2;
+  const hw = b.w/2, hh = b.h/2;
+  const cos = Math.abs(Math.cos(rot)), sin = Math.abs(Math.sin(rot));
+  const rw = hw*cos + hh*sin, rh = hw*sin + hh*cos;
+  return { x: cx-rw, y: cy-rh, w: rw*2, h: rh*2 };
+}
+
 function handlePositions(b) {
   const {x,y,w,h} = b;
   return {
@@ -301,13 +368,21 @@ function handlePositions(b) {
   };
 }
 
-const HANDLE_CURSOR = { nw:'nwse-resize', se:'nwse-resize', ne:'nesw-resize', sw:'nesw-resize',
-                         n:'ns-resize', s:'ns-resize', e:'ew-resize', w:'ew-resize', move:'move' };
+function rotateHandlePos(b) {
+  // A single handle above the bounding box center
+  return { x: b.x + b.w/2, y: b.y - ROT_HANDLE_DIST / state.zoom };
+}
 
-// ── Selection decorations ─────────────────────────────────────────────────────
+const HANDLE_CURSOR = {
+  nw:'nwse-resize', se:'nwse-resize', ne:'nesw-resize', sw:'nesw-resize',
+  n:'ns-resize', s:'ns-resize', e:'ew-resize', w:'ew-resize', move:'move'
+};
+
+// ── Selection decorations ─────────────────────────────────────────────────
 
 function drawSelectionDecorations() {
-  // Multi-select group box (no handles, just dashed box)
+  const showRotate = state.altDown;
+
   if (state.selectedSet.size > 1) {
     const groupB = groupBounds();
     if (groupB) {
@@ -315,31 +390,91 @@ function drawSelectionDecorations() {
       ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
       ctx.strokeRect(wx2sx(groupB.x)-2, wy2sy(groupB.y)-2, groupB.w*state.zoom+4, groupB.h*state.zoom+4);
       ctx.setLineDash([]);
+
+      if (showRotate) {
+        drawRotateHandle(groupB);
+      } else {
+        drawResizeHandlesForBounds(groupB);
+      }
       ctx.restore();
     }
+    return;
   }
 
-  // Single-selection handles
-  if (state.selected !== null && state.objects[state.selected] && state.selectedSet.size <= 1) {
+  if (state.selected !== null && state.objects[state.selected]) {
     const obj = state.objects[state.selected];
     const needsHandles = ['image','text','rect','ellipse'].includes(obj.type);
-    const b = getBounds(obj);
+    const b = getBoundsNoRotation(obj);
+    const rot = obj.rotation || 0;
+
     ctx.save();
+
+    // Draw dashed selection border (rotated)
+    if (rot) {
+      const cx = b.x + b.w/2, cy = b.y + b.h/2;
+      ctx.translate(wx2sx(cx), wy2sy(cy));
+      ctx.rotate(rot);
+      ctx.translate(-wx2sx(cx), -wy2sy(cy));
+    }
+
     ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
     ctx.strokeRect(wx2sx(b.x)-1, wy2sy(b.y)-1, b.w*state.zoom+2, b.h*state.zoom+2);
     ctx.setLineDash([]);
 
+    ctx.restore();
+    ctx.save();
+
     if (needsHandles) {
-      const handles = handlePositions(b);
-      ctx.fillStyle = ACCENT; ctx.strokeStyle = '#1a1917'; ctx.lineWidth = 1.5;
-      for (const pos of Object.values(handles)) {
-        ctx.beginPath();
-        ctx.arc(wx2sx(pos.x), wy2sy(pos.y), HANDLE_R, 0, Math.PI*2);
-        ctx.fill(); ctx.stroke();
+      const displayB = rot ? getBounds(obj) : b;
+      if (showRotate) {
+        drawRotateHandle(displayB);
+      } else {
+        drawResizeHandlesForBounds(displayB);
       }
     }
     ctx.restore();
   }
+}
+
+function drawResizeHandlesForBounds(b) {
+  const handles = handlePositions(b);
+  ctx.fillStyle = ACCENT; ctx.strokeStyle = '#1a1917'; ctx.lineWidth = 1.5;
+  for (const pos of Object.values(handles)) {
+    ctx.beginPath();
+    ctx.arc(wx2sx(pos.x), wy2sy(pos.y), HANDLE_R, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+  }
+}
+
+function drawRotateHandle(b) {
+  const rp = rotateHandlePos(b);
+  const sx = wx2sx(rp.x), sy = wy2sy(rp.y);
+  const cx = wx2sx(b.x + b.w/2), cy = wy2sy(b.y);
+
+  // Line from center-top to rotate handle
+  ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.5; ctx.setLineDash([3,2]);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(sx, sy);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Rotate circle
+  ctx.fillStyle = ACCENT; ctx.strokeStyle = '#1a1917'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(sx, sy, HANDLE_R + 1, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+
+  // Rotation arrow icon inside
+  ctx.strokeStyle = '#1a1917'; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.arc(sx, sy, 3.5, -Math.PI*0.7, Math.PI*0.7);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx + 3.5*Math.cos(Math.PI*0.7) - 2, sy + 3.5*Math.sin(Math.PI*0.7));
+  ctx.lineTo(sx + 3.5*Math.cos(Math.PI*0.7), sy + 3.5*Math.sin(Math.PI*0.7));
+  ctx.lineTo(sx + 3.5*Math.cos(Math.PI*0.7), sy + 3.5*Math.sin(Math.PI*0.7) - 2);
+  ctx.stroke();
 }
 
 function drawMarqueeRect() {
@@ -364,7 +499,13 @@ function groupBounds() {
   return { x:minX, y:minY, w:maxX-minX, h:maxY-minY };
 }
 
-// ── Hit testing ───────────────────────────────────────────────────────────────
+// ── Hit testing ───────────────────────────────────────────────────────────
+
+function hitTestRotateHandle(b, wx, wy) {
+  const rp = rotateHandlePos(b);
+  const threshold = (HANDLE_R + 4) / state.zoom;
+  return Math.hypot(wx - rp.x, wy - rp.y) <= threshold;
+}
 
 function hitTestHandle(obj, wx, wy) {
   if (!['image','text','rect','ellipse'].includes(obj.type)) return null;
@@ -387,7 +528,7 @@ function findObjectAt(wx, wy) {
   return null;
 }
 
-// ── Undo ──────────────────────────────────────────────────────────────────────
+// ── Undo ──────────────────────────────────────────────────────────────────
 
 function snapshot() {
   state.undoStack.push(JSON.stringify(state.objects.map(serializeObj)));
@@ -401,7 +542,7 @@ function undo() {
   render(); saveSession();
 }
 
-// ── Session ───────────────────────────────────────────────────────────────────
+// ── Session ───────────────────────────────────────────────────────────────
 
 const SESSION_KEY = 'canvas_session';
 
@@ -438,7 +579,7 @@ function loadSession() {
   } catch { return false; }
 }
 
-// ── Add image ─────────────────────────────────────────────────────────────────
+// ── Add image ─────────────────────────────────────────────────────────────
 
 function addImage(dataURL, cx, cy) {
   const img = new Image();
@@ -465,23 +606,29 @@ function dataURLFromFile(file, cb) {
   r.readAsDataURL(file);
 }
 
-// ── Mouse events ──────────────────────────────────────────────────────────────
+// ── Mouse events ──────────────────────────────────────────────────────────
 
 mainCanvas.addEventListener('mousedown', onMouseDown);
 window.addEventListener('mousemove', onMouseMove);
 window.addEventListener('mouseup', onMouseUp);
 mainCanvas.addEventListener('dblclick', onDblClick);
+mainCanvas.addEventListener('contextmenu', onContextMenu);
 
 function onMouseDown(e) {
+  hideContextMenu();
   if (e.button === 1 || (state.spaceDown && e.button === 0)) { startPan(e); return; }
   if (e.button !== 0) return;
 
-  // Commit any active text edit if clicking outside input
-  if (state.editingTextIndex !== null && e.target !== textInput) {
-    commitTextEdit();
-  }
+  if (state.editingTextIndex !== null && e.target !== textInput) commitTextEdit();
 
   const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+
+  if (state.tool === 'snip') {
+    state.snipStart = { wx, wy };
+    state.snipRect  = { x: wx, y: wy, w: 0, h: 0 };
+    state.dragging  = true;
+    return;
+  }
 
   if (state.tool === 'select') {
     handleSelectMouseDown(e, wx, wy);
@@ -489,9 +636,7 @@ function onMouseDown(e) {
   }
   if (state.tool === 'pen' || state.tool === 'eraser') {
     snapshot();
-    state.currentStroke = {
-      type: state.tool, points: [{x:wx,y:wy}], color: state.color, size: state.size
-    };
+    state.currentStroke = { type: state.tool, points: [{x:wx,y:wy}], color: state.color, size: state.size };
     state.dragging = true;
     return;
   }
@@ -508,28 +653,68 @@ function onMouseDown(e) {
 }
 
 function handleSelectMouseDown(e, wx, wy) {
-  // 1. Check resize handle on single selection
-  if (state.selected !== null && state.selectedSet.size <= 1) {
-    const obj = state.objects[state.selected];
-    const handle = hitTestHandle(obj, wx, wy);
-    if (handle) {
+  // Check rotate handle on single or multi selection
+  if (state.altDown && state.selectedSet.size > 0) {
+    const b = state.selectedSet.size > 1 ? groupBounds() : getBounds(state.objects[state.selected]);
+    if (b && hitTestRotateHandle(b, wx, wy)) {
       snapshot();
-      state.resizeHandle    = handle;
-      state.resizeDragStart = { wx, wy };
-      const b = getBounds(obj);
-      state.resizeObjStart  = { ...b, ...obj,
-        points: obj.points ? obj.points.map(p=>({...p})) : undefined };
-      state.resizeAspect    = b.h ? b.w / b.h : 1;
-      state.spaceWhileResizing = false;
+      const cx = b.x + b.w/2, cy = b.y + b.h/2;
+      state.rotating = true;
+      state.rotateStart = {
+        angle: Math.atan2(wy - cy, wx - cx),
+        cx, cy,
+      };
+      // Snapshot each selected object's rotation
+      state.rotateObjStart = [...state.selectedSet].map(i => ({
+        idx: i,
+        rotation: state.objects[i].rotation || 0,
+        // center of object for group rotation
+        b: getBoundsNoRotation(state.objects[i]),
+      }));
       state.dragging = true;
       return;
     }
   }
 
-  // 2. Hit an object
+  // Check resize handles (single or multi-select group), not while alt
+  if (!state.altDown && state.selectedSet.size > 0) {
+    const isMulti = state.selectedSet.size > 1;
+    const b = isMulti ? groupBounds() : (state.selected !== null ? getBoundsNoRotation(state.objects[state.selected]) : null);
+    if (b) {
+      const threshold = HANDLE_HIT / state.zoom;
+      let handle = null;
+      for (const [dir, pos] of Object.entries(handlePositions(b))) {
+        if (Math.hypot(wx - pos.x, wy - pos.y) <= threshold) { handle = dir; break; }
+      }
+      if (handle) {
+        snapshot();
+        state.resizeHandle    = handle;
+        state.resizeDragStart = { wx, wy };
+        if (isMulti) {
+          // Store group bounds + per-object snapshots for proportional scale
+          state.resizeObjStart = {
+            groupB: { ...b },
+            objs: [...state.selectedSet].map(i => {
+              const obj = state.objects[i];
+              const ob  = getBoundsNoRotation(obj);
+              return { idx: i, ob, snap: { ...obj, points: obj.points ? obj.points.map(p=>({...p})) : undefined } };
+            }),
+          };
+          state.resizeAspect = b.h ? b.w / b.h : 1;
+        } else {
+          const obj = state.objects[state.selected];
+          const ob  = getBoundsNoRotation(obj);
+          state.resizeObjStart = { ...ob, ...obj, points: obj.points ? obj.points.map(p=>({...p})) : undefined };
+          state.resizeAspect   = ob.h ? ob.w / ob.h : 1;
+        }
+        state.dragging = true;
+        return;
+      }
+    }
+  }
+
   const idx = findObjectAt(wx, wy);
   if (idx !== null) {
-    // Shift-click: toggle in selectedSet
     if (e.shiftKey) {
       if (state.selectedSet.has(idx)) {
         state.selectedSet.delete(idx);
@@ -541,12 +726,11 @@ function handleSelectMouseDown(e, wx, wy) {
       render(); return;
     }
 
-    // If Alt held: duplicate before moving
     if (state.altDown) {
       snapshot();
       const clones = [...(state.selectedSet.has(idx) ? state.selectedSet : [idx])]
         .map(i => deepCloneObj(state.objects[i]));
-      const cloneIndices = clones.map((cl, j) => {
+      const cloneIndices = clones.map(cl => {
         state.objects.push(cl);
         return state.objects.length - 1;
       });
@@ -557,21 +741,19 @@ function handleSelectMouseDown(e, wx, wy) {
       state.selected    = idx;
     }
 
-    // Start group/single move
     snapshot();
     state.resizeHandle    = 'move';
     state.resizeDragStart = { wx, wy };
-    // Snapshot positions of all selected objects
     state.resizeObjStart  = [...state.selectedSet].map(i => ({
       idx: i,
       snap: { ...state.objects[i],
         points: state.objects[i].points ? state.objects[i].points.map(p=>({...p})) : undefined }
     }));
     state.dragging = true;
+    syncControlsToSelection();
     render(); return;
   }
 
-  // 3. Drag empty space → start marquee
   if (!e.shiftKey) {
     state.selected = null;
     state.selectedSet.clear();
@@ -583,11 +765,9 @@ function handleSelectMouseDown(e, wx, wy) {
 }
 
 function handleTextMouseDown(wx, wy) {
-  // Create a new empty text object, immediately enter edit mode
   const fontSize = Math.max(14, state.size * 2.5);
   snapshot();
-  const obj = { type:'text', x:wx, y:wy, text:'', color:state.color, fontSize,
-                w:200, h:fontSize*1.3 };
+  const obj = { type:'text', x:wx, y:wy, text:'', color:state.color, fontSize, w:200, h:fontSize*1.3 };
   state.objects.push(obj);
   state.selected    = state.objects.length - 1;
   state.selectedSet = new Set([state.selected]);
@@ -611,8 +791,19 @@ function onMouseMove(e) {
 
   const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
 
+  // Snip drag
+  if (state.snipRect && state.snipStart) {
+    state.snipRect = {
+      x: Math.min(wx, state.snipStart.wx),
+      y: Math.min(wy, state.snipStart.wy),
+      w: Math.abs(wx - state.snipStart.wx),
+      h: Math.abs(wy - state.snipStart.wy),
+    };
+    render(); return;
+  }
+
   // Marquee
-  if (state.marqueeRect && !state.resizeHandle) {
+  if (state.marqueeRect && !state.resizeHandle && !state.rotating) {
     state.marqueeRect = {
       x: Math.min(wx, state.marqueeStart.wx),
       y: Math.min(wy, state.marqueeStart.wy),
@@ -622,14 +813,21 @@ function onMouseMove(e) {
     render(); return;
   }
 
+  // Rotation
+  if (state.rotating) {
+    applyRotation(wx, wy, e.metaKey || e.ctrlKey);
+    render(); return;
+  }
+
   // Resize / move
   if (state.resizeHandle) {
     if (state.resizeHandle === 'move') {
       applyGroupMove(wx, wy);
+    } else if (state.resizeObjStart?.groupB) {
+      applyGroupResize(wx, wy);
     } else {
       applySingleResize(wx, wy);
     }
-    // Reposition text input if editing
     if (state.editingTextIndex !== null) repositionTextInput();
     render(); return;
   }
@@ -644,14 +842,12 @@ function onMouseMove(e) {
   if (state.currentShape && state.drawStart) {
     let x2 = wx, y2 = wy;
     if (e.shiftKey) {
-      // Constrain to square / 45°
       const dxs = x2 - state.drawStart.wx, dys = y2 - state.drawStart.wy;
       if (['rect','ellipse'].includes(state.tool)) {
         const s = Math.max(Math.abs(dxs), Math.abs(dys));
         x2 = state.drawStart.wx + Math.sign(dxs) * s;
         y2 = state.drawStart.wy + Math.sign(dys) * s;
       } else {
-        // Snap line to 45° increments
         const angle = Math.round(Math.atan2(dys, dxs) / (Math.PI/4)) * (Math.PI/4);
         const len   = Math.hypot(dxs, dys);
         x2 = state.drawStart.wx + Math.cos(angle) * len;
@@ -663,18 +859,78 @@ function onMouseMove(e) {
   }
 }
 
+function applyRotation(wx, wy, snap) {
+  const { cx, cy, angle: startAngle } = state.rotateStart;
+  let delta = Math.atan2(wy - cy, wx - cx) - startAngle;
+  if (snap) {
+    const SNAP = Math.PI / 12; // 15°
+    delta = Math.round(delta / SNAP) * SNAP;
+  }
+
+  for (const { idx, rotation: startRot, b } of state.rotateObjStart) {
+    const obj = state.objects[idx];
+    if (state.rotateObjStart.length === 1) {
+      // Single object: rotate around its own center
+      obj.rotation = startRot + delta;
+    } else {
+      // Group: rotate each object around group center
+      const ocx = b.x + b.w/2, ocy = b.y + b.h/2;
+      const dx = ocx - cx, dy = ocy - cy;
+      const dist = Math.hypot(dx, dy);
+      const baseAngle = Math.atan2(dy, dx);
+      const newAngle = baseAngle + delta;
+      obj.rotation = startRot + delta;
+      // Also move the object's position so it orbits the group center
+      const newCx = cx + Math.cos(newAngle) * dist;
+      const newCy = cy + Math.sin(newAngle) * dist;
+      if (obj.type === 'line') {
+        // For lines, offset endpoints
+        const snapLine = state.rotateObjStart.find(s => s.idx === idx);
+        if (snapLine) {
+          // not perfectly handled, but good enough for group rotate
+          obj.rotation = startRot + delta;
+        }
+      } else if (obj.type !== 'pen' && obj.type !== 'eraser') {
+        obj.x = newCx - b.w/2;
+        obj.y = newCy - b.h/2;
+      }
+    }
+  }
+}
+
 function onMouseUp(e) {
   if (state.panning) { stopPan(); return; }
   if (!state.dragging) return;
   state.dragging = false;
 
+  // Finish snip
+  if (state.snipRect && state.snipStart) {
+    const r = state.snipRect;
+    state.snipStart = null;
+    if (r.w > 5 && r.h > 5) {
+      showSnipOverlay(r);
+    } else {
+      state.snipRect = null;
+      render();
+    }
+    return;
+  }
+
   // Finish marquee
-  if (state.marqueeRect && !state.resizeHandle) {
+  if (state.marqueeRect && !state.resizeHandle && !state.rotating) {
     finishMarquee();
     marqueeDiv.style.display = 'none';
     state.marqueeRect  = null;
     state.marqueeStart = null;
     render(); return;
+  }
+
+  // Finish rotation
+  if (state.rotating) {
+    state.rotating       = false;
+    state.rotateStart    = null;
+    state.rotateObjStart = null;
+    saveDebounced(); return;
   }
 
   // Finish resize / move
@@ -683,6 +939,7 @@ function onMouseUp(e) {
     state.resizeDragStart = null;
     state.resizeObjStart  = null;
     state.resizeAspect    = null;
+    state.spaceAnchor     = null;
     saveDebounced(); return;
   }
 
@@ -699,7 +956,20 @@ function onMouseUp(e) {
   // Finish shape
   if (state.currentShape) {
     const sh = state.currentShape;
-    const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+    let { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+    if (e.shiftKey) {
+      const dxs = wx - state.drawStart.wx, dys = wy - state.drawStart.wy;
+      if (sh.type !== 'line') {
+        const s = Math.max(Math.abs(dxs), Math.abs(dys));
+        wx = state.drawStart.wx + Math.sign(dxs) * s;
+        wy = state.drawStart.wy + Math.sign(dys) * s;
+      } else {
+        const angle = Math.round(Math.atan2(dys, dxs) / (Math.PI/4)) * (Math.PI/4);
+        const len = Math.hypot(dxs, dys);
+        wx = state.drawStart.wx + Math.cos(angle) * len;
+        wy = state.drawStart.wy + Math.sin(angle) * len;
+      }
+    }
     const finalShape = makeShape(state.drawStart.wx, state.drawStart.wy, wx, wy);
     const degenerate = sh.type === 'line'
       ? Math.hypot(sh.x2-sh.x1, sh.y2-sh.y1) < 2
@@ -708,9 +978,11 @@ function onMouseUp(e) {
       state.objects.push(finalShape);
       state.selected    = state.objects.length - 1;
       state.selectedSet = new Set([state.selected]);
+      setTool('select');
+      syncControlsToSelection();
       saveDebounced();
     } else {
-      state.undoStack.pop(); // revert the snapshot from mousedown
+      state.undoStack.pop();
     }
     state.currentShape = null;
     state.drawStart    = null;
@@ -724,12 +996,144 @@ function onDblClick(e) {
   if (idx !== null && state.objects[idx].type === 'text') {
     state.selected    = idx;
     state.selectedSet = new Set([idx]);
+    syncControlsToSelection();
     showTextInputForObj(idx);
     render();
   }
 }
 
-// ── Marquee finish ────────────────────────────────────────────────────────────
+// ── Right-click context menu ───────────────────────────────────────────────
+
+function onContextMenu(e) {
+  e.preventDefault();
+  const { x: wx, y: wy } = screenToWorld(e.clientX, e.clientY);
+  const idx = findObjectAt(wx, wy);
+  if (idx === null) { hideContextMenu(); return; }
+
+  if (!state.selectedSet.has(idx)) {
+    state.selectedSet = new Set([idx]);
+    state.selected    = idx;
+    render();
+  }
+
+  showContextMenu(e.clientX, e.clientY, idx);
+}
+
+function showContextMenu(sx, sy) {
+  ctxMenu.style.left = sx + 'px';
+  ctxMenu.style.top  = sy + 'px';
+  ctxMenu.classList.remove('hidden');
+}
+
+function hideContextMenu() {
+  ctxMenu.classList.add('hidden');
+}
+
+ctxMenu.addEventListener('click', (e) => {
+  const action = e.target.closest('[data-order]')?.dataset.order;
+  if (!action) return;
+  e.stopPropagation();
+  hideContextMenu();
+  applyZOrder(action);
+});
+
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 2) return; // right-click handled by contextmenu event
+  if (!ctxMenu.classList.contains('hidden') && !ctxMenu.contains(e.target)) hideContextMenu();
+});
+
+function applyZOrder(action) {
+  if (state.selectedSet.size === 0) return;
+  snapshot();
+  const indices = [...state.selectedSet].sort((a,b) => a-b);
+
+  if (action === 'front') {
+    const objs = indices.map(i => state.objects[i]);
+    for (let i = indices.length-1; i >= 0; i--) state.objects.splice(indices[i], 1);
+    state.objects.push(...objs);
+    const newBase = state.objects.length - indices.length;
+    state.selectedSet = new Set(indices.map((_, j) => newBase + j));
+    state.selected    = state.objects.length - 1;
+  } else if (action === 'back') {
+    const objs = indices.map(i => state.objects[i]);
+    for (let i = indices.length-1; i >= 0; i--) state.objects.splice(indices[i], 1);
+    state.objects.unshift(...objs);
+    state.selectedSet = new Set(indices.map((_, j) => j));
+    state.selected    = 0;
+  } else if (action === 'forward') {
+    // Move each up by one, highest first
+    for (let i = indices.length-1; i >= 0; i--) {
+      const idx = indices[i];
+      if (idx < state.objects.length - 1 && !indices.includes(idx + 1)) {
+        const tmp = state.objects[idx]; state.objects[idx] = state.objects[idx+1]; state.objects[idx+1] = tmp;
+        indices[i] = idx + 1;
+      }
+    }
+    state.selectedSet = new Set(indices);
+    state.selected    = indices[indices.length - 1];
+  } else if (action === 'backward') {
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      if (idx > 0 && !indices.includes(idx - 1)) {
+        const tmp = state.objects[idx]; state.objects[idx] = state.objects[idx-1]; state.objects[idx-1] = tmp;
+        indices[i] = idx - 1;
+      }
+    }
+    state.selectedSet = new Set(indices);
+    state.selected    = indices[0];
+  }
+
+  render(); saveDebounced();
+}
+
+// ── Snip overlay UI ───────────────────────────────────────────────────────
+
+let _snipRect = null;
+
+function showSnipOverlay(r) {
+  _snipRect = { ...r };
+  const sx = wx2sx(r.x), sy = wy2sy(r.y);
+  const sw = r.w * state.zoom, sh = r.h * state.zoom;
+  const x = Math.min(sx, sx + sw), y = Math.min(sy, sy + sh);
+  const w = Math.abs(sw), h = Math.abs(sh);
+
+  snipOverlay.style.left   = x + 'px';
+  snipOverlay.style.top    = (y + TOOLBAR_H) + 'px';
+  snipOverlay.style.width  = w + 'px';
+  snipOverlay.style.height = h + 'px';
+  snipOverlay.classList.remove('hidden');
+}
+
+function hideSnipOverlay() {
+  snipOverlay.classList.add('hidden');
+  state.snipRect = null;
+  _snipRect = null;
+  render();
+}
+
+document.getElementById('snip-copy').addEventListener('click', () => {
+  if (!_snipRect) return;
+  const r = _snipRect;
+  // Crop directly from the main canvas (WYSIWYG)
+  const tmp = document.createElement('canvas');
+  const sx = wx2sx(r.x), sy = wy2sy(r.y);
+  const sw = r.w * state.zoom, sh = r.h * state.zoom;
+  tmp.width  = Math.max(1, Math.round(Math.abs(sw)));
+  tmp.height = Math.max(1, Math.round(Math.abs(sh)));
+  const tc = tmp.getContext('2d');
+  tc.drawImage(mainCanvas, Math.min(sx, sx+sw), Math.min(sy, sy+sh), Math.abs(sw), Math.abs(sh), 0, 0, tmp.width, tmp.height);
+
+  tmp.toBlob(blob => {
+    navigator.clipboard.write([new ClipboardItem({'image/png': blob})])
+      .then(() => showToast('Snip copied'))
+      .catch(err => console.error(err));
+  }, 'image/png');
+  hideSnipOverlay();
+});
+
+document.getElementById('snip-cancel').addEventListener('click', hideSnipOverlay);
+
+// ── Marquee finish ────────────────────────────────────────────────────────
 
 function finishMarquee() {
   const r = state.marqueeRect;
@@ -743,10 +1147,11 @@ function finishMarquee() {
   if (hits.length) {
     state.selectedSet = new Set(hits);
     state.selected    = hits[hits.length - 1];
+    syncControlsToSelection();
   }
 }
 
-// ── Shape factory ─────────────────────────────────────────────────────────────
+// ── Shape factory ─────────────────────────────────────────────────────────
 
 function makeShape(x1, y1, x2, y2) {
   if (state.tool === 'line')   return { type:'line', x1,y1,x2,y2, color:state.color, size:state.size, arrow:false };
@@ -755,16 +1160,14 @@ function makeShape(x1, y1, x2, y2) {
   if (state.tool === 'ellipse')return { type:'ellipse', x:x1,y:y1,w:x2-x1,h:y2-y1, color:state.color, size:state.size, filled:state.filled };
 }
 
-// ── Resize ────────────────────────────────────────────────────────────────────
+// ── Resize ────────────────────────────────────────────────────────────────
 
 function applyGroupMove(wx, wy) {
-  // resizeObjStart is an array of {idx, snap}
   const snaps = state.resizeObjStart;
   const dx = wx - state.resizeDragStart.wx;
   const dy = wy - state.resizeDragStart.wy;
   for (const { idx, snap } of snaps) {
-    const obj = state.objects[idx];
-    moveObj(obj, snap, dx, dy);
+    moveObj(state.objects[idx], snap, dx, dy);
   }
 }
 
@@ -779,21 +1182,95 @@ function moveObj(obj, snap, dx, dy) {
   }
 }
 
-function applySingleResize(wx, wy) {
-  const handle = state.resizeHandle;
-  const obj    = state.objects[state.selected];
-  const snap   = state.resizeObjStart;
+function applyGroupResize(wx, wy) {
+  const handle  = state.resizeHandle;
+  const { groupB, objs } = state.resizeObjStart;
   let dx = wx - state.resizeDragStart.wx;
   let dy = wy - state.resizeDragStart.wy;
 
-  // Space while resizing → move the entire object instead
+  // Compute new group rect
+  const r = { x: groupB.x, y: groupB.y, w: groupB.w, h: groupB.h };
+  if (handle.includes('e')) r.w = groupB.w + dx;
+  if (handle.includes('s')) r.h = groupB.h + dy;
+  if (handle.includes('w')) { r.x = groupB.x + dx; r.w = groupB.w - dx; }
+  if (handle.includes('n')) { r.y = groupB.y + dy; r.h = groupB.h - dy; }
+
+  // Shift: lock aspect ratio on corner handles
+  if (state.shiftDown && handle.length === 2) {
+    const aspect = state.resizeAspect || 1;
+    if (Math.abs(r.w / groupB.w) > Math.abs(r.h / groupB.h)) {
+      const newH = r.w / aspect;
+      if (handle.includes('n')) r.y = groupB.y + groupB.h - newH;
+      r.h = newH;
+    } else {
+      const newW = r.h * aspect;
+      if (handle.includes('w')) r.x = groupB.x + groupB.w - newW;
+      r.w = newW;
+    }
+  }
+
+  if (Math.abs(r.w) < 4) r.w = 4 * Math.sign(r.w || 1);
+  if (Math.abs(r.h) < 4) r.h = 4 * Math.sign(r.h || 1);
+
+  const scaleX = r.w / groupB.w;
+  const scaleY = r.h / groupB.h;
+
+  for (const { idx, ob, snap } of objs) {
+    const obj = state.objects[idx];
+
+    if (obj.type === 'line') {
+      obj.x1 = r.x + (snap.x1 - groupB.x) * scaleX;
+      obj.y1 = r.y + (snap.y1 - groupB.y) * scaleY;
+      obj.x2 = r.x + (snap.x2 - groupB.x) * scaleX;
+      obj.y2 = r.y + (snap.y2 - groupB.y) * scaleY;
+    } else if (obj.type === 'pen' || obj.type === 'eraser') {
+      if (snap.points) {
+        obj.points = snap.points.map(p => ({
+          x: r.x + (p.x - groupB.x) * scaleX,
+          y: r.y + (p.y - groupB.y) * scaleY,
+        }));
+      }
+    } else {
+      // Use bounding box origin (ob.x/y) for position scaling — consistent with groupB which is also from getBounds
+      obj.x = r.x + (ob.x - groupB.x) * scaleX;
+      obj.y = r.y + (ob.y - groupB.y) * scaleY;
+      obj.w = ob.w * scaleX;
+      obj.h = ob.h * scaleY;
+      if (obj.type === 'text') obj.fontSize = Math.max(6, Math.abs(obj.h) * 0.75);
+    }
+  }
+}
+
+function applySingleResize(wx, wy) {
+  const handle = state.resizeHandle;
+  const obj    = state.objects[state.selected];
+
   if (state.spaceDown) {
-    moveObj(obj, { x: snap.x, y: snap.y, x1: snap.x1, y1: snap.y1,
-                   x2: snap.x2, y2: snap.y2, points: snap.points }, dx, dy);
+    if (!state.spaceAnchor) {
+      state.spaceAnchor = {
+        wx, wy,
+        snap: { ...obj, points: obj.points ? obj.points.map(p=>({...p})) : undefined }
+      };
+    }
+    const dx = wx - state.spaceAnchor.wx;
+    const dy = wy - state.spaceAnchor.wy;
+    moveObj(obj, state.spaceAnchor.snap, dx, dy);
     return;
   }
 
+  if (state.spaceAnchor) {
+    const b = getBoundsNoRotation(obj);
+    state.resizeDragStart = { wx, wy };
+    state.resizeObjStart  = { ...b, ...obj, points: obj.points ? obj.points.map(p=>({...p})) : undefined };
+    state.resizeAspect    = b.h ? b.w / b.h : 1;
+    state.spaceAnchor     = null;
+  }
+
   if (!['image','rect','ellipse','text'].includes(obj.type)) return;
+
+  const snap = state.resizeObjStart;
+  let dx = wx - state.resizeDragStart.wx;
+  let dy = wy - state.resizeDragStart.wy;
 
   const r = { x: snap.x, y: snap.y, w: snap.w, h: snap.h };
   if (handle.includes('e')) r.w = snap.w + dx;
@@ -801,11 +1278,9 @@ function applySingleResize(wx, wy) {
   if (handle.includes('w')) { r.x = snap.x + dx; r.w = snap.w - dx; }
   if (handle.includes('n')) { r.y = snap.y + dy; r.h = snap.h - dy; }
 
-  // Shift: proportional resize (corner handles only)
   if (state.shiftDown && handle.length === 2) {
     const aspect = state.resizeAspect || 1;
     if (Math.abs(r.w / snap.w) > Math.abs(r.h / snap.h)) {
-      // Width changed more — drive height from width
       const newH = r.w / aspect;
       if (handle.includes('n')) r.y = snap.y + snap.h - newH;
       r.h = newH;
@@ -823,7 +1298,7 @@ function applySingleResize(wx, wy) {
   if (obj.type === 'text') obj.fontSize = Math.max(8, Math.abs(r.h) * 0.75);
 }
 
-// ── Pan / zoom ────────────────────────────────────────────────────────────────
+// ── Pan / zoom ────────────────────────────────────────────────────────────
 
 function startPan(e) {
   state.panning = true;
@@ -877,20 +1352,40 @@ function fitAll() {
   updateZoomLabel(); render();
 }
 
-// ── Cursor ────────────────────────────────────────────────────────────────────
+// ── Cursor ────────────────────────────────────────────────────────────────
 
 function updateCursor(e) {
   if (state.panning) return;
   if (state.spaceDown) { mainCanvas.style.cursor = 'grab'; return; }
 
+  if (state.tool === 'snip') { mainCanvas.style.cursor = 'crosshair'; return; }
+
   if (state.tool === 'select') {
     const { x: wx, y: wy } = e.clientX != null ? screenToWorld(e.clientX, e.clientY) : { x:0, y:0 };
-    // Check handles on selected
-    if (state.selected !== null && state.selectedSet.size <= 1) {
-      const handle = hitTestHandle(state.objects[state.selected], wx, wy);
-      if (handle) { mainCanvas.style.cursor = HANDLE_CURSOR[handle]; return; }
+
+    if (state.altDown && state.selectedSet.size > 0) {
+      // Check rotate handle
+      const b = state.selectedSet.size > 1 ? groupBounds() : (state.selected !== null ? getBounds(state.objects[state.selected]) : null);
+      if (b && hitTestRotateHandle(b, wx, wy)) {
+        mainCanvas.style.cursor = 'grab';
+        return;
+      }
+      mainCanvas.style.cursor = 'crosshair'; // alt held but not on handle → indicate alt mode
+      return;
     }
-    // Over an object → move
+
+    // Check resize handles for single or multi selection
+    if (state.selectedSet.size > 0) {
+      const b = state.selectedSet.size > 1 ? groupBounds() : (state.selected !== null ? getBoundsNoRotation(state.objects[state.selected]) : null);
+      if (b) {
+        const threshold = HANDLE_HIT / state.zoom;
+        for (const [dir, pos] of Object.entries(handlePositions(b))) {
+          if (Math.hypot(wx - pos.x, wy - pos.y) <= threshold) {
+            mainCanvas.style.cursor = HANDLE_CURSOR[dir]; return;
+          }
+        }
+      }
+    }
     if (findObjectAt(wx, wy) !== null) { mainCanvas.style.cursor = 'move'; return; }
     mainCanvas.style.cursor = 'default';
     return;
@@ -901,68 +1396,111 @@ function updateCursor(e) {
   mainCanvas.style.cursor = map[state.tool] || 'default';
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
+// ── Keyboard ──────────────────────────────────────────────────────────────
 
 window.addEventListener('keydown', (e) => {
   if (e.target === textInput) {
-    // Handle text input keys inline
     if (e.key === 'Enter') { commitTextEdit(); e.preventDefault(); }
     if (e.key === 'Escape') { cancelTextEdit(); e.preventDefault(); }
     return;
   }
 
   if (e.key === ' ') { state.spaceDown = true; updateCursor({}); e.preventDefault(); return; }
-  if (e.key === 'Alt' || e.key === 'Option') { state.altDown = true; return; }
+  if (e.key === 'Alt' || e.key === 'Option') { state.altDown = true; updateCursor({}); render(); return; }
   if (e.key === 'Shift') { state.shiftDown = true; return; }
 
   if ((e.ctrlKey || e.metaKey)) {
     if (e.key === 'z') { undo(); e.preventDefault(); return; }
     if (e.key === '0') { state.zoom=1; state.vx=0; state.vy=0; updateZoomLabel(); render(); e.preventDefault(); return; }
     if (e.key === 'c') { copyToClipboard(e); e.preventDefault(); return; }
+    if (e.key === 'a') {
+      e.preventDefault();
+      if (state.objects.length) {
+        state.selectedSet = new Set(state.objects.map((_,i) => i));
+        state.selected    = state.objects.length - 1;
+        syncControlsToSelection();
+        render();
+      }
+      return;
+    }
   }
 
-  const toolMap = { v:'select', p:'pen', l:'line', a:'arrow', r:'rect', e:'ellipse', t:'text', x:'eraser' };
+  const toolMap = { v:'select', p:'pen', l:'line', a:'arrow', r:'rect', e:'ellipse', t:'text', x:'eraser', s:'snip' };
   if (!e.ctrlKey && !e.metaKey && toolMap[e.key.toLowerCase()]) {
     setTool(toolMap[e.key.toLowerCase()]); return;
   }
 
   if (e.key === 'Delete' || e.key === 'Backspace') { deleteSelected(); return; }
-  if (e.key === 'Escape') { state.selected=null; state.selectedSet.clear(); marqueeDiv.style.display='none'; state.marqueeRect=null; render(); }
+  if (e.key === 'Escape') {
+    if (!snipOverlay.classList.contains('hidden')) { hideSnipOverlay(); return; }
+    state.selected=null; state.selectedSet.clear();
+    marqueeDiv.style.display='none'; state.marqueeRect=null;
+    render();
+  }
 });
 
 window.addEventListener('keyup', (e) => {
   if (e.key === ' ')   { state.spaceDown = false; updateCursor({}); }
-  if (e.key === 'Alt' || e.key === 'Option') state.altDown = false;
+  if (e.key === 'Alt' || e.key === 'Option') { state.altDown = false; updateCursor({}); render(); }
   if (e.key === 'Shift') state.shiftDown = false;
 });
 
-// ── Tools ─────────────────────────────────────────────────────────────────────
+// ── Tools ─────────────────────────────────────────────────────────────────
 
 function setTool(name) {
+  // Cancel snip if switching away
+  if (state.tool === 'snip' && name !== 'snip') {
+    hideSnipOverlay();
+    state.snipRect = null; state.snipStart = null;
+    render();
+  }
   state.tool = name;
   document.querySelectorAll('.tool-btn[data-tool]').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.tool === name));
-  // Commit text edit if switching away from text tool
   if (name !== 'text' && state.editingTextIndex !== null) commitTextEdit();
   updateCursor({});
 }
 document.querySelectorAll('.tool-btn[data-tool]').forEach(btn =>
   btn.addEventListener('click', () => setTool(btn.dataset.tool)));
 
-// ── Style controls ────────────────────────────────────────────────────────────
+// ── Style controls ────────────────────────────────────────────────────────
 
 colorPicker.addEventListener('input', () => {
   state.color = colorPicker.value;
-  // Live-update text being edited
+  if (state.selectedSet.size > 0) {
+    for (const idx of state.selectedSet) {
+      const obj = state.objects[idx];
+      if (obj) {
+        obj.color = state.color;
+        if (state.editingTextIndex === idx) textInput.style.color = state.color;
+      }
+    }
+    render(); saveDebounced();
+    return;
+  }
   if (state.editingTextIndex !== null) {
     state.objects[state.editingTextIndex].color = state.color;
     textInput.style.color = state.color;
     render();
   }
 });
+
 sizeSlider.addEventListener('input', () => {
   state.size = +sizeSlider.value;
   sizeLabelEl.textContent = state.size;
+  if (state.selectedSet.size > 0) {
+    for (const idx of state.selectedSet) {
+      const obj = state.objects[idx];
+      if (!obj) continue;
+      if (obj.type === 'text') {
+        obj.fontSize = Math.max(8, state.size * 2.5);
+        obj.h = obj.fontSize * 1.3;
+      } else if (obj.type !== 'image') {
+        obj.size = state.size;
+      }
+    }
+    render(); saveDebounced();
+  }
 });
 
 let fillFilled = false;
@@ -978,9 +1516,31 @@ fillToggle.addEventListener('click', () => {
     icon.setAttribute('fill', 'none');
     icon.setAttribute('stroke', 'currentColor');
   }
+  if (state.selectedSet.size > 0) {
+    for (const idx of state.selectedSet) {
+      const obj = state.objects[idx];
+      if (obj && (obj.type === 'rect' || obj.type === 'ellipse')) obj.filled = state.filled;
+    }
+    render(); saveDebounced();
+  }
 });
 
-// ── Text tool ─────────────────────────────────────────────────────────────────
+// ── Background controls ───────────────────────────────────────────────────
+
+bgColorPicker.addEventListener('input', () => {
+  state.bgColor = bgColorPicker.value;
+  state.bgTransparent = false;
+  bgTransBtn.classList.remove('active');
+  render();
+});
+
+bgTransBtn.addEventListener('click', () => {
+  state.bgTransparent = !state.bgTransparent;
+  bgTransBtn.classList.toggle('active', state.bgTransparent);
+  render();
+});
+
+// ── Text tool ─────────────────────────────────────────────────────────────
 
 function showTextInputForObj(idx) {
   const obj = state.objects[idx];
@@ -1011,12 +1571,10 @@ function repositionTextInput() {
 }
 
 textInput.addEventListener('input', () => {
-  // Live-update the object's text so it renders behind
   if (state.editingTextIndex !== null) {
     const obj = state.objects[state.editingTextIndex];
     if (obj) {
       obj.text = textInput.value;
-      // Update bounds width
       ctx.font = `${obj.fontSize}px system-ui, -apple-system, sans-serif`;
       obj.w = Math.max(20, ctx.measureText(obj.text || 'M').width + 4);
       render();
@@ -1024,9 +1582,7 @@ textInput.addEventListener('input', () => {
   }
 });
 
-textInput.addEventListener('blur', () => {
-  commitTextEdit();
-});
+textInput.addEventListener('blur', () => { commitTextEdit(); });
 
 function commitTextEdit() {
   if (state.editingTextIndex === null) return;
@@ -1034,7 +1590,6 @@ function commitTextEdit() {
   const obj = state.objects[idx];
   state.editingTextIndex = null;
   textInput.classList.add('hidden');
-
   if (obj) {
     const text = textInput.value.trim();
     if (text) {
@@ -1044,7 +1599,6 @@ function commitTextEdit() {
       obj.w = ctx.measureText(text).width + 4;
       obj.h = obj.fontSize * 1.3;
     } else {
-      // Empty text → remove the object
       state.objects.splice(idx, 1);
       if (state.selected === idx) { state.selected = null; state.selectedSet.clear(); }
     }
@@ -1057,7 +1611,6 @@ function cancelTextEdit() {
   const idx = state.editingTextIndex;
   state.editingTextIndex = null;
   textInput.classList.add('hidden');
-  // Remove the text object (was just created, Escape = cancel)
   const obj = state.objects[idx];
   if (obj && !obj.text) {
     state.objects.splice(idx, 1);
@@ -1066,7 +1619,7 @@ function cancelTextEdit() {
   render();
 }
 
-// ── Action buttons ────────────────────────────────────────────────────────────
+// ── Action buttons ────────────────────────────────────────────────────────
 
 document.getElementById('btn-paste').addEventListener('click', () => {
   navigator.clipboard.read().then(items => {
@@ -1079,10 +1632,7 @@ document.getElementById('btn-paste').addEventListener('click', () => {
         return;
       }
     }
-  }).catch(() => {
-    // Fallback: focus and trigger paste event
-    mainCanvas.focus();
-  });
+  }).catch(() => { mainCanvas.focus(); });
 });
 
 document.getElementById('btn-file').addEventListener('click', () => fileInput.click());
@@ -1115,6 +1665,26 @@ document.getElementById('btn-copy').addEventListener('click', () => copyToClipbo
 document.getElementById('btn-export').addEventListener('click', exportPNG);
 document.getElementById('btn-fit').addEventListener('click', fitAll);
 
+function syncControlsToSelection() {
+  if (state.selected === null || !state.objects[state.selected]) return;
+  const obj = state.objects[state.selected];
+  if (obj.color) { colorPicker.value = obj.color; state.color = obj.color; }
+  if (obj.type === 'text') {
+    const sz = Math.max(1, Math.min(40, Math.round(obj.fontSize / 2.5)));
+    sizeSlider.value = sz; sizeLabelEl.textContent = sz; state.size = sz;
+  } else if (obj.size !== undefined) {
+    const sz = Math.max(1, Math.min(40, obj.size));
+    sizeSlider.value = sz; sizeLabelEl.textContent = sz; state.size = sz;
+  }
+  if (obj.filled !== undefined) {
+    fillFilled = obj.filled; state.filled = obj.filled;
+    fillToggle.classList.toggle('toggled', obj.filled);
+    const icon = document.getElementById('fill-icon');
+    if (obj.filled) { icon.setAttribute('fill', 'currentColor'); icon.removeAttribute('stroke'); }
+    else { icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor'); }
+  }
+}
+
 function deleteSelected() {
   if (!state.selectedSet.size) return;
   snapshot();
@@ -1124,7 +1694,7 @@ function deleteSelected() {
   render(); saveDebounced();
 }
 
-// ── Clone helper ──────────────────────────────────────────────────────────────
+// ── Clone helper ──────────────────────────────────────────────────────────
 
 function deepCloneObj(obj) {
   if (obj.type === 'image') {
@@ -1138,7 +1708,7 @@ function deepCloneObj(obj) {
   return { ...obj };
 }
 
-// ── Paste from clipboard ──────────────────────────────────────────────────────
+// ── Paste from clipboard ──────────────────────────────────────────────────
 
 window.addEventListener('paste', (e) => {
   if (e.target === textInput) return;
@@ -1149,7 +1719,7 @@ window.addEventListener('paste', (e) => {
   }
 });
 
-// ── Drag & drop ───────────────────────────────────────────────────────────────
+// ── Drag & drop ───────────────────────────────────────────────────────────
 
 mainCanvas.addEventListener('dragover', (e) => e.preventDefault());
 mainCanvas.addEventListener('drop', (e) => {
@@ -1162,7 +1732,7 @@ mainCanvas.addEventListener('drop', (e) => {
   }
 });
 
-// ── Screen region capture ─────────────────────────────────────────────────────
+// ── Screen region capture ─────────────────────────────────────────────────
 
 function startRegionCapture() {
   chrome.runtime.sendMessage({ action: 'captureRegion' }, async (res) => {
@@ -1247,7 +1817,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !regionOverlay.classList.contains('hidden')) hideRegionOverlay();
 });
 
-// ── Composite helper ──────────────────────────────────────────────────────────
+// ── Composite helper ──────────────────────────────────────────────────────
 
 function compositeObjects(objs, bg) {
   if (!objs.length) return null;
@@ -1268,16 +1838,14 @@ function compositeObjects(objs, bg) {
   return exp;
 }
 
-// ── Copy to clipboard ─────────────────────────────────────────────────────────
+// ── Copy to clipboard ─────────────────────────────────────────────────────
 
 function copyToClipboard(e) {
   let objs = state.objects;
 
-  // Cmd+C with selection → copy selected only
   if (e && state.selectedSet.size > 0) {
     objs = [...state.selectedSet].map(i => state.objects[i]).filter(Boolean);
   } else if (e && state.marqueeRect) {
-    // Copy marquee region as raster
     copyMarqueeRegion(); return;
   }
 
@@ -1296,8 +1864,6 @@ function copyMarqueeRegion() {
   if (!r) return;
   const exp = compositeObjects(state.objects, null);
   if (!exp) return;
-  // Crop to marquee region
-  // (objects were rendered offset by PAD=16 and min bounds; just re-composite bounded)
   let minX=Infinity, minY=Infinity;
   for (const obj of state.objects) { const b=getBounds(obj); minX=Math.min(minX,b.x); minY=Math.min(minY,b.y); }
   const PAD=16;
@@ -1319,11 +1885,12 @@ function showToast(msg) {
   setTimeout(() => { copyToast.classList.add('hidden'); copyToast.classList.remove('fading'); }, 1900);
 }
 
-// ── Export PNG ────────────────────────────────────────────────────────────────
+// ── Export PNG ────────────────────────────────────────────────────────────
 
 function exportPNG() {
   if (!state.objects.length) { alert('Nothing to export.'); return; }
-  const exp = compositeObjects(state.objects, null); // transparent bg
+  const bg = state.bgTransparent ? null : (state.bgColor || '#1a1917');
+  const exp = compositeObjects(state.objects, bg);
   if (!exp) return;
   const a = document.createElement('a');
   a.href     = exp.toDataURL('image/png');
@@ -1331,7 +1898,7 @@ function exportPNG() {
   a.click();
 }
 
-// ── Session UI ────────────────────────────────────────────────────────────────
+// ── Session UI ────────────────────────────────────────────────────────────
 
 function initSession() {
   if (loadSession()) { sessionModal.classList.remove('hidden'); }
@@ -1350,18 +1917,14 @@ function startFresh() {
   render();
 }
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────
 
 function debounce(fn, ms) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
-
-// Page size = initial viewport
-state.pageW = Math.round(mainCanvas.width  / state.zoom);
-state.pageH = Math.round(mainCanvas.height / state.zoom);
+// ── Boot ──────────────────────────────────────────────────────────────────
 
 initSession();
 setTool('select');
