@@ -26,61 +26,201 @@
   <div id="region-hint">Click and drag to select a region &nbsp;·&nbsp; Esc to cancel</div>
 </div>
 
+<!-- Rubber-band marquee overlay (DOM div, always on top of canvas) -->
+<div id="marquee-rect"></div>
+
 <!-- Text input overlay -->
-<input id="text-input" class="hidden" type="text" placeholder="Type then Enter…">
+<input id="text-input" class="hidden" type="text" placeholder="Type here…">
+
+<!-- Copy feedback toast -->
+<div id="copy-toast" class="hidden">Copied to clipboard</div>
 
 <!-- Toolbar -->
 <div id="toolbar">
-  <div class="toolbar-group" id="tool-group">
-    <button class="tool-btn active" data-tool="select" title="Select / Move (V)">↖</button>
-    <button class="tool-btn" data-tool="pen" title="Pen (P)">✏</button>
-    <button class="tool-btn" data-tool="line" title="Line (L)">╱</button>
-    <button class="tool-btn arrow-toggle" id="arrow-toggle" title="Toggle arrow tip">→</button>
-    <button class="tool-btn" data-tool="rect" title="Rectangle (R)">▭</button>
-    <button class="tool-btn" data-tool="ellipse" title="Ellipse (E)">○</button>
-    <button class="tool-btn" data-tool="text" title="Text (T)">T</button>
-    <button class="tool-btn" data-tool="eraser" title="Eraser (X)">⌫</button>
+
+  <!-- Drawing tools -->
+  <div class="toolbar-group">
+    <!-- Select -->
+    <button class="tool-btn active" data-tool="select" title="Select / Move (V)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 2.5l9 5.5-4.5 1.5L6.5 14 3.5 2.5z"/>
+      </svg>
+    </button>
+    <!-- Pen -->
+    <button class="tool-btn" data-tool="pen" title="Pen (P)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 2.5l2.5 2.5L5 13.5H2.5V11L11 2.5z"/>
+        <path d="M9.5 4l2.5 2.5"/>
+      </svg>
+    </button>
+    <!-- Line -->
+    <button class="tool-btn" data-tool="line" title="Line (L)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <line x1="3" y1="13" x2="13" y2="3"/>
+      </svg>
+    </button>
+    <!-- Arrow -->
+    <button class="tool-btn" data-tool="arrow" title="Arrow (A)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="13" x2="13" y2="3"/>
+        <polyline points="13,3 9,3 13,7"/>
+      </svg>
+    </button>
+    <!-- Rect -->
+    <button class="tool-btn" data-tool="rect" title="Rectangle (R)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="3" y="4" width="10" height="8" rx="1.5"/>
+      </svg>
+    </button>
+    <!-- Ellipse -->
+    <button class="tool-btn" data-tool="ellipse" title="Ellipse (E)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <ellipse cx="8" cy="8" rx="5.5" ry="4"/>
+      </svg>
+    </button>
+    <!-- Text -->
+    <button class="tool-btn" data-tool="text" title="Text (T)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <line x1="8" y1="3" x2="8" y2="13"/>
+        <line x1="3.5" y1="5" x2="12.5" y2="5"/>
+        <line x1="5.5" y1="13" x2="10.5" y2="13"/>
+      </svg>
+    </button>
+    <!-- Eraser -->
+    <button class="tool-btn" data-tool="eraser" title="Eraser (X)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12L7 4l6 5.5-4 2.5H3z"/>
+        <line x1="6.5" y1="13.5" x2="14" y2="13.5"/>
+      </svg>
+    </button>
   </div>
 
   <div class="toolbar-sep"></div>
 
-  <div class="toolbar-group" id="style-group">
-    <label class="color-wrap" title="Color">
-      <input type="color" id="color-picker" value="#f38ba8">
+  <!-- Style controls -->
+  <div class="toolbar-group">
+    <label class="color-wrap" title="Stroke color">
+      <input type="color" id="color-picker" value="#e06c75">
     </label>
-    <label class="size-wrap" title="Size">
-      <input type="range" id="size-slider" min="1" max="40" value="4">
+    <div class="size-wrap">
+      <input type="range" id="size-slider" min="1" max="40" value="4" title="Stroke size">
       <span id="size-label">4</span>
-    </label>
-    <button class="tool-btn fill-toggle" id="fill-toggle" title="Toggle fill">◻</button>
+    </div>
+    <!-- Fill toggle -->
+    <button class="tool-btn" id="fill-toggle" title="Toggle fill (shapes)">
+      <svg id="fill-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="3" y="4" width="10" height="8" rx="1.5"/>
+      </svg>
+    </button>
   </div>
 
   <div class="toolbar-sep"></div>
 
-  <div class="toolbar-group" id="action-group">
-    <button class="tool-btn" id="btn-paste" title="Paste image (Ctrl+V)">⎘</button>
-    <button class="tool-btn" id="btn-file" title="Open image file">📂</button>
-    <button class="tool-btn" id="btn-tab" title="Capture current tab">🖥</button>
-    <button class="tool-btn" id="btn-region" title="Capture screen region">✂</button>
+  <!-- Image input -->
+  <div class="toolbar-group">
+    <!-- Paste -->
+    <button class="tool-btn" id="btn-paste" title="Paste image (Ctrl+V)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4.5" width="9" height="10" rx="1"/>
+        <path d="M6 4.5V3.5a2 2 0 014 0v1"/>
+        <line x1="8" y1="8.5" x2="8" y2="12"/>
+        <line x1="6" y1="10.5" x2="10" y2="10.5"/>
+      </svg>
+    </button>
+    <!-- File -->
+    <button class="tool-btn" id="btn-file" title="Open image file">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 5.5a1 1 0 011-1h3.5l1.5 1.5H13a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1V5.5z"/>
+      </svg>
+    </button>
+    <!-- Tab capture -->
+    <button class="tool-btn" id="btn-tab" title="Capture current tab">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="2" y="3" width="12" height="8.5" rx="1"/>
+        <line x1="6" y1="14" x2="10" y2="14"/>
+        <line x1="8" y1="11.5" x2="8" y2="14"/>
+      </svg>
+    </button>
+    <!-- Region capture -->
+    <button class="tool-btn" id="btn-region" title="Capture screen region">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <path d="M3 3h3M10 3h3v3M13 10v3h-3M3 10v3h3"/>
+        <rect x="5.5" y="5.5" width="5" height="5" rx="0.5" stroke-dasharray="2 1.2"/>
+      </svg>
+    </button>
     <input type="file" id="file-input" accept="image/*" class="hidden" multiple>
   </div>
 
   <div class="toolbar-sep"></div>
 
-  <div class="toolbar-group" id="edit-group">
-    <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">↩</button>
-    <button class="tool-btn" id="btn-delete" title="Delete selected (Del)">🗑</button>
-    <button class="tool-btn" id="btn-clear" title="Clear all">✕</button>
+  <!-- Edit actions -->
+  <div class="toolbar-group">
+    <!-- Undo -->
+    <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3.5 8.5a5 5 0 105 5"/>
+        <polyline points="3.5,5 3.5,8.5 7,8.5"/>
+      </svg>
+    </button>
+    <!-- Delete selected -->
+    <button class="tool-btn" id="btn-delete" title="Delete selected (Del)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3,5 13,5"/>
+        <path d="M5.5 5V3.5h5V5"/>
+        <path d="M5.5 5l.8 8h3.4l.8-8"/>
+      </svg>
+    </button>
+    <!-- Clear all -->
+    <button class="tool-btn" id="btn-clear" title="Clear all">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/>
+        <line x1="5.5" y1="5.5" x2="10.5" y2="10.5"/>
+        <line x1="10.5" y1="5.5" x2="5.5" y2="10.5"/>
+      </svg>
+    </button>
   </div>
 
   <div class="toolbar-sep"></div>
 
+  <!-- Export / copy -->
   <div class="toolbar-group">
-    <button class="tool-btn" id="btn-export" title="Export as PNG">💾</button>
+    <!-- Copy canvas to clipboard -->
+    <button class="tool-btn" id="btn-copy" title="Copy canvas to clipboard">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="5" y="5" width="8" height="9" rx="1"/>
+        <path d="M3 11V3a1 1 0 011-1h8"/>
+      </svg>
+    </button>
+    <!-- Export PNG -->
+    <button class="tool-btn" id="btn-export" title="Export as PNG (save file)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="8" y1="2" x2="8" y2="10.5"/>
+        <polyline points="5,8 8,11.5 11,8"/>
+        <path d="M3 13h10"/>
+      </svg>
+    </button>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <!-- Zoom controls -->
+  <div class="toolbar-group">
+    <!-- Fit all -->
+    <button class="tool-btn" id="btn-fit" title="Fit all content in view">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9.5 2.5H13v3.5"/>
+        <path d="M6.5 13.5H3v-3.5"/>
+        <line x1="13" y1="2.5" x2="9.5" y2="6"/>
+        <line x1="3" y1="13.5" x2="6.5" y2="10"/>
+      </svg>
+    </button>
   </div>
 
   <div class="toolbar-spacer"></div>
-  <div id="zoom-label">100%</div>
+
+  <!-- Zoom label (click to reset) -->
+  <button id="zoom-label" title="Reset zoom (Ctrl+0)">100%</button>
+
 </div>
 
 <!-- Main canvas -->
