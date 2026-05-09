@@ -61,6 +61,10 @@ const state = {
   snipStart: null,
   snipRect:  null,
 
+  // Zoom tool state
+  zoomStart: null,
+  zoomRect:  null,
+
   // Modifiers
   altDown:   false,
   shiftDown: false,
@@ -141,6 +145,7 @@ function render() {
   if (state.marqueeRect) drawMarqueeRect();
 
   if (state.snipRect) drawSnipRect();
+  if (state.zoomRect) drawZoomRect();
 }
 
 function drawGrid() {
@@ -314,6 +319,34 @@ function drawSnipRect() {
   ctx.setLineDash([]);
   ctx.strokeRect(x, y, w, h);
   ctx.restore();
+}
+
+function drawZoomRect() {
+  const r = state.zoomRect;
+  if (!r) return;
+  const sx = wx2sx(r.x), sy = wy2sy(r.y);
+  const sw = r.w * state.zoom, sh = r.h * state.zoom;
+  const x = Math.min(sx, sx+sw), y = Math.min(sy, sy+sh);
+  const w = Math.abs(sw), h = Math.abs(sh);
+  ctx.save();
+  ctx.strokeStyle = '#88ccff';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 3]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = 'rgba(100,180,255,0.08)';
+  ctx.fillRect(x, y, w, h);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function applyZoomToRect(r) {
+  const pad = 20;
+  const fitW = mainCanvas.width  / (r.w + pad * 2);
+  const fitH = mainCanvas.height / (r.h + pad * 2);
+  state.zoom = Math.max(0.05, Math.min(20, Math.min(fitW, fitH)));
+  state.vx   = r.x - pad;
+  state.vy   = r.y - pad;
+  updateZoomLabel();
 }
 
 // ── Bounds / handles ──────────────────────────────────────────────────────
@@ -630,6 +663,13 @@ function onMouseDown(e) {
     return;
   }
 
+  if (state.tool === 'zoom') {
+    state.zoomStart = { wx, wy };
+    state.zoomRect  = { x: wx, y: wy, w: 0, h: 0 };
+    state.dragging  = true;
+    return;
+  }
+
   if (state.tool === 'select') {
     handleSelectMouseDown(e, wx, wy);
     return;
@@ -664,13 +704,18 @@ function handleSelectMouseDown(e, wx, wy) {
         angle: Math.atan2(wy - cy, wx - cx),
         cx, cy,
       };
-      // Snapshot each selected object's rotation
-      state.rotateObjStart = [...state.selectedSet].map(i => ({
-        idx: i,
-        rotation: state.objects[i].rotation || 0,
-        // center of object for group rotation
-        b: getBoundsNoRotation(state.objects[i]),
-      }));
+      // Snapshot each selected object for rotation
+      state.rotateObjStart = [...state.selectedSet].map(i => {
+        const obj = state.objects[i];
+        const b = getBounds(obj); // AABB accounting for existing rotation
+        const ocx = b.x + b.w/2, ocy = b.y + b.h/2;
+        const base = { idx: i, rotation: obj.rotation || 0, startX: ocx, startY: ocy };
+        // store extra per-type snapshot data
+        if (obj.type === 'line') Object.assign(base, { x1: obj.x1, y1: obj.y1, x2: obj.x2, y2: obj.y2 });
+        else if (obj.type === 'pen' || obj.type === 'eraser') base.points = obj.points.map(p => ({...p}));
+        else Object.assign(base, { w: b.w, h: b.h });
+        return base;
+      });
       state.dragging = true;
       return;
     }
@@ -802,6 +847,17 @@ function onMouseMove(e) {
     render(); return;
   }
 
+  // Zoom drag
+  if (state.zoomRect && state.zoomStart) {
+    state.zoomRect = {
+      x: Math.min(wx, state.zoomStart.wx),
+      y: Math.min(wy, state.zoomStart.wy),
+      w: Math.abs(wx - state.zoomStart.wx),
+      h: Math.abs(wy - state.zoomStart.wy),
+    };
+    render(); return;
+  }
+
   // Marquee
   if (state.marqueeRect && !state.resizeHandle && !state.rotating) {
     state.marqueeRect = {
@@ -867,32 +923,36 @@ function applyRotation(wx, wy, snap) {
     delta = Math.round(delta / SNAP) * SNAP;
   }
 
-  for (const { idx, rotation: startRot, b } of state.rotateObjStart) {
+  for (const objSnap of state.rotateObjStart) {
+    const { idx, rotation: startRot, startX, startY } = objSnap;
     const obj = state.objects[idx];
-    if (state.rotateObjStart.length === 1) {
-      // Single object: rotate around its own center
-      obj.rotation = startRot + delta;
-    } else {
-      // Group: rotate each object around group center
-      const ocx = b.x + b.w/2, ocy = b.y + b.h/2;
-      const dx = ocx - cx, dy = ocy - cy;
+    obj.rotation = startRot + delta;
+
+    if (state.rotateObjStart.length > 1) {
+      // Orbit the object's snapshot position around group center
+      const dx = startX - cx, dy = startY - cy;
       const dist = Math.hypot(dx, dy);
-      const baseAngle = Math.atan2(dy, dx);
-      const newAngle = baseAngle + delta;
-      obj.rotation = startRot + delta;
-      // Also move the object's position so it orbits the group center
-      const newCx = cx + Math.cos(newAngle) * dist;
-      const newCy = cy + Math.sin(newAngle) * dist;
-      if (obj.type === 'line') {
-        // For lines, offset endpoints
-        const snapLine = state.rotateObjStart.find(s => s.idx === idx);
-        if (snapLine) {
-          // not perfectly handled, but good enough for group rotate
-          obj.rotation = startRot + delta;
+      if (dist > 0) {
+        const baseAngle = Math.atan2(dy, dx);
+        const newAngle = baseAngle + delta;
+        const newCx = cx + Math.cos(newAngle) * dist;
+        const newCy = cy + Math.sin(newAngle) * dist;
+        if (obj.type === 'line') {
+          const ldx = objSnap.x2 - objSnap.x1, ldy = objSnap.y2 - objSnap.y1;
+          obj.x1 = newCx - ldx/2; obj.y1 = newCy - ldy/2;
+          obj.x2 = newCx + ldx/2; obj.y2 = newCy + ldy/2;
+        } else if (obj.type === 'pen' || obj.type === 'eraser') {
+          if (objSnap.points) {
+            const cos = Math.cos(delta), sin = Math.sin(delta);
+            obj.points = objSnap.points.map(p => {
+              const pdx = p.x - cx, pdy = p.y - cy;
+              return { x: cx + pdx*cos - pdy*sin, y: cy + pdx*sin + pdy*cos };
+            });
+          }
+        } else {
+          obj.x = newCx - objSnap.w/2;
+          obj.y = newCy - objSnap.h/2;
         }
-      } else if (obj.type !== 'pen' && obj.type !== 'eraser') {
-        obj.x = newCx - b.w/2;
-        obj.y = newCy - b.h/2;
       }
     }
   }
@@ -913,6 +973,18 @@ function onMouseUp(e) {
       state.snipRect = null;
       render();
     }
+    return;
+  }
+
+  // Finish zoom
+  if (state.zoomRect && state.zoomStart) {
+    const r = state.zoomRect;
+    state.zoomStart = null;
+    state.zoomRect  = null;
+    if (r.w > 5 && r.h > 5) {
+      applyZoomToRect(r);
+    }
+    render();
     return;
   }
 
@@ -1320,7 +1392,15 @@ mainCanvas.addEventListener('wheel', (e) => {
   const r  = mainCanvas.getBoundingClientRect();
   const mx = e.clientX - r.left, my = e.clientY - r.top;
   const wx = mx/state.zoom + state.vx, wy = my/state.zoom + state.vy;
-  state.zoom = Math.max(0.05, Math.min(20, state.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
+
+  // Continuous scaling: use actual delta magnitude so touchpad pinch is smooth.
+  // deltaMode 0 = pixels (touchpad), 1 = lines, 2 = pages.
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 32;
+  if (e.deltaMode === 2) dy *= 400;
+  const factor = Math.pow(0.999, dy); // ~10% per 100px, smooth for any delta
+  state.zoom = Math.max(0.05, Math.min(20, state.zoom * factor));
+
   state.vx = wx - mx/state.zoom;
   state.vy = wy - my/state.zoom;
   updateZoomLabel(); render();
@@ -1358,7 +1438,7 @@ function updateCursor(e) {
   if (state.panning) return;
   if (state.spaceDown) { mainCanvas.style.cursor = 'grab'; return; }
 
-  if (state.tool === 'snip') { mainCanvas.style.cursor = 'crosshair'; return; }
+  if (state.tool === 'snip' || state.tool === 'zoom') { mainCanvas.style.cursor = 'crosshair'; return; }
 
   if (state.tool === 'select') {
     const { x: wx, y: wy } = e.clientX != null ? screenToWorld(e.clientX, e.clientY) : { x:0, y:0 };
@@ -1392,7 +1472,7 @@ function updateCursor(e) {
   }
 
   const map = { pen:'crosshair', line:'crosshair', arrow:'crosshair',
-                rect:'crosshair', ellipse:'crosshair', text:'text', eraser:'cell' };
+                rect:'crosshair', ellipse:'crosshair', text:'text', eraser:'cell', zoom:'crosshair' };
   mainCanvas.style.cursor = map[state.tool] || 'default';
 }
 
@@ -1425,7 +1505,7 @@ window.addEventListener('keydown', (e) => {
     }
   }
 
-  const toolMap = { v:'select', p:'pen', l:'line', a:'arrow', r:'rect', e:'ellipse', t:'text', x:'eraser', s:'snip' };
+  const toolMap = { v:'select', p:'pen', l:'line', a:'arrow', r:'rect', e:'ellipse', t:'text', x:'eraser', s:'snip', z:'zoom' };
   if (!e.ctrlKey && !e.metaKey && toolMap[e.key.toLowerCase()]) {
     setTool(toolMap[e.key.toLowerCase()]); return;
   }
@@ -1452,6 +1532,11 @@ function setTool(name) {
   if (state.tool === 'snip' && name !== 'snip') {
     hideSnipOverlay();
     state.snipRect = null; state.snipStart = null;
+    render();
+  }
+  // Cancel zoom drag if switching away
+  if (state.tool === 'zoom' && name !== 'zoom') {
+    state.zoomRect = null; state.zoomStart = null;
     render();
   }
   state.tool = name;
