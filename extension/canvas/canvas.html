@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SnipBoard</title>
+  <link rel="stylesheet" href="canvas.css">
+</head>
+<body>
+
+<!-- Session restore modal -->
+<div id="session-modal" class="modal hidden">
+  <div class="modal-box">
+    <h2>Previous session found</h2>
+    <p>You have unsaved work from a previous session. What would you like to do?</p>
+    <div class="modal-buttons">
+      <button id="session-continue" class="btn-primary">Continue</button>
+      <button id="session-clear" class="btn-danger">Start Fresh</button>
+    </div>
+  </div>
+</div>
+
+<!-- Region capture overlay -->
+<div id="region-overlay" class="hidden">
+  <canvas id="region-canvas"></canvas>
+  <div id="region-selection"></div>
+  <div id="region-hint">Click and drag to select a region &nbsp;·&nbsp; Esc to cancel</div>
+</div>
+
+<!-- Text input overlay -->
+<input id="text-input" class="hidden" type="text" placeholder="Type then Enter…">
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <div class="toolbar-group" id="tool-group">
+    <button class="tool-btn active" data-tool="select" title="Select / Move (V)">↖</button>
+    <button class="tool-btn" data-tool="pen" title="Pen (P)">✏</button>
+    <button class="tool-btn" data-tool="line" title="Line (L)">╱</button>
+    <button class="tool-btn arrow-toggle" id="arrow-toggle" title="Toggle arrow tip">→</button>
+    <button class="tool-btn" data-tool="rect" title="Rectangle (R)">▭</button>
+    <button class="tool-btn" data-tool="ellipse" title="Ellipse (E)">○</button>
+    <button class="tool-btn" data-tool="text" title="Text (T)">T</button>
+    <button class="tool-btn" data-tool="eraser" title="Eraser (X)">⌫</button>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <div class="toolbar-group" id="style-group">
+    <label class="color-wrap" title="Color">
+      <input type="color" id="color-picker" value="#f38ba8">
+    </label>
+    <label class="size-wrap" title="Size">
+      <input type="range" id="size-slider" min="1" max="40" value="4">
+      <span id="size-label">4</span>
+    </label>
+    <button class="tool-btn fill-toggle" id="fill-toggle" title="Toggle fill">◻</button>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <div class="toolbar-group" id="action-group">
+    <button class="tool-btn" id="btn-paste" title="Paste image (Ctrl+V)">⎘</button>
+    <button class="tool-btn" id="btn-file" title="Open image file">📂</button>
+    <button class="tool-btn" id="btn-tab" title="Capture current tab">🖥</button>
+    <button class="tool-btn" id="btn-region" title="Capture screen region">✂</button>
+    <input type="file" id="file-input" accept="image/*" class="hidden" multiple>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <div class="toolbar-group" id="edit-group">
+    <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">↩</button>
+    <button class="tool-btn" id="btn-delete" title="Delete selected (Del)">🗑</button>
+    <button class="tool-btn" id="btn-clear" title="Clear all">✕</button>
+  </div>
+
+  <div class="toolbar-sep"></div>
+
+  <div class="toolbar-group">
+    <button class="tool-btn" id="btn-export" title="Export as PNG">💾</button>
+  </div>
+
+  <div class="toolbar-spacer"></div>
+  <div id="zoom-label">100%</div>
+</div>
+
+<!-- Main canvas -->
+<canvas id="main-canvas"></canvas>
+
+<script src="canvas.js"></script>
+</body>
+</html>
