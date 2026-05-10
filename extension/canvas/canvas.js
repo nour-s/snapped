@@ -707,13 +707,14 @@ function handleSelectMouseDown(e, wx, wy) {
       // Snapshot each selected object for rotation
       state.rotateObjStart = [...state.selectedSet].map(i => {
         const obj = state.objects[i];
-        const b = getBounds(obj); // AABB accounting for existing rotation
-        const ocx = b.x + b.w/2, ocy = b.y + b.h/2;
+        // Use the unrotated bounds center as the object's pivot point,
+        // and the group center (cx,cy) as the orbit center.
+        const nb = getBoundsNoRotation(obj);
+        const ocx = nb.x + nb.w/2, ocy = nb.y + nb.h/2;
         const base = { idx: i, rotation: obj.rotation || 0, startX: ocx, startY: ocy };
-        // store extra per-type snapshot data
         if (obj.type === 'line') Object.assign(base, { x1: obj.x1, y1: obj.y1, x2: obj.x2, y2: obj.y2 });
         else if (obj.type === 'pen' || obj.type === 'eraser') base.points = obj.points.map(p => ({...p}));
-        else Object.assign(base, { w: b.w, h: b.h });
+        else Object.assign(base, { x: obj.x, y: obj.y, w: obj.w, h: obj.h });
         return base;
       });
       state.dragging = true;
@@ -950,6 +951,7 @@ function applyRotation(wx, wy, snap) {
             });
           }
         } else {
+          // newCx/newCy is the new center; restore using actual object w/h
           obj.x = newCx - objSnap.w/2;
           obj.y = newCy - objSnap.h/2;
         }
