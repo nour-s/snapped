@@ -2013,5 +2013,14 @@ function debounce(fn, ms) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 
+document.getElementById('btn-reload-ext').addEventListener('click', () => chrome.runtime.reload());
+
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'R') {
+    e.preventDefault();
+    chrome.runtime.reload();
+  }
+}, true);
+
 initSession();
 setTool('select');
