@@ -1,4 +1,4 @@
-# SnipBoard — Project Context for Claude Code
+# Snapped — Project Context for Claude Code
 
 A Chrome extension (Manifest V3) that replicates Windows Snipping Tool in the browser.
 **Goal**: paste multiple screenshots onto one infinite canvas, draw/annotate on top, manage them in one tab.
@@ -198,7 +198,6 @@ state = {
 
 ## Git
 
-- Local repo, no remote. Branch: `master`.
+- Repo: https://github.com/nour-s/snapped — branch: `master`
 - `bfc84bb` — Round 1: initial extension
 - `cacb38c` — Round 2: SVG icons, warm theme, rubber-band select, text rework, modifiers, zoom, clipboard
-- Uncommitted: Round 2 bug fixes (space glitch, auto-switch to select, shift+resize on mouseup, live style updates)
